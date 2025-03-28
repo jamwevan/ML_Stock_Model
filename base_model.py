@@ -1,91 +1,117 @@
-# Import the pandas library for data manipulation
 import pandas as pd
-# Import train_test_split to split data into training and testing sets
-from sklearn.model_selection import train_test_split
-# Import RandomForestRegressor for regression modeling using an ensemble of trees
-from sklearn.ensemble import RandomForestRegressor
-# Import evaluation metrics: Mean Squared Error, Mean Absolute Error, and R² score
-from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
-# Import numpy for numerical operations (e.g., square root)
 import numpy as np
+import os
+import calendar
+from sklearn.model_selection import train_test_split
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 
-# Define a function that trains a regression model for a given ticker
+US_MARKET_HOLIDAYS_2025 = pd.to_datetime([
+    '2025-01-01', '2025-01-20', '2025-02-17', '2025-04-18',
+    '2025-05-26', '2025-07-04', '2025-09-01', '2025-11-27', '2025-12-25'
+])
+
+def adjust_date(date_str):
+    try:
+        return pd.to_datetime(date_str)
+    except Exception:
+        parts = date_str.split('-')
+        if len(parts) != 3:
+            return None
+        try:
+            year, month, day = map(int, parts)
+            day = min(day, calendar.monthrange(year, month)[1])
+            return pd.to_datetime(f"{year}-{month:02d}-{day:02d}")
+        except Exception:
+            return None
+
+def get_trading_days(start_date, end_date):
+    start_dt = adjust_date(start_date)
+    end_dt = adjust_date(end_date)
+    if start_dt is None or end_dt is None or start_dt > end_dt:
+        return pd.DatetimeIndex([])
+    all_bdays = pd.date_range(start=start_dt, end=end_dt, freq='B')
+    return pd.DatetimeIndex([d for d in all_bdays if d not in US_MARKET_HOLIDAYS_2025])
+
 def train_model_for_ticker(ticker, test_size=0.2, random_state=42):
-    """
-    Loads the CSV for a single ticker, creates a 'target' column for the next day's Close,
-    drops the date column if present, and trains a RandomForestRegressor using all numeric
-    columns (except 'target') as features. Returns the trained model and regression metrics.
-    """
-    # Construct the CSV file path for the given ticker
     csv_path = f'processed_data/{ticker}_features.csv'
-    # Read the CSV file into a pandas DataFrame
     df = pd.read_csv(csv_path)
-    # Create a new column 'target' which is tomorrow's closing price by shifting 'Close' up by one row
+    date_col = 'date' if 'date' in df.columns else 'Date' if 'Date' in df.columns else None
+    if date_col:
+        df[date_col] = pd.to_datetime(df[date_col], errors='coerce')
     df['target'] = df['Close'].shift(-1)
-    # Drop the last row that now contains a NaN value for 'target' (because there is no next day)
     df.dropna(inplace=True)
-    # Check if there is a column named 'date'; if so, drop it
-    if 'date' in df.columns:
-        # Drop the 'date' column from the DataFrame
-        df.drop(columns=['date'], inplace=True)
-    # If there is no 'date' column, check for 'Date' and drop it if it exists
-    elif 'Date' in df.columns:
-        # Drop the 'Date' column from the DataFrame
-        df.drop(columns=['Date'], inplace=True)
-    # Select all columns with numeric data types, then drop the 'target' column from these features
-    X = df.select_dtypes(include=[np.number]).drop(columns=['target'])
-    # Set the target variable (y) to the 'target' column which contains the next day's Close price
-    y = df['target']
-    # Split the data into training and testing sets using the specified test size and random state
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=test_size, random_state=random_state
-    )
-    # Initialize a RandomForestRegressor with 100 trees and the provided random state for reproducibility
+    df_for_training = df.copy()
+    if date_col:
+        df_for_training.drop(columns=[date_col], inplace=True)
+    X = df_for_training.select_dtypes(include=[np.number]).drop(columns=['target'])
+    y = df_for_training['target']
+    feature_columns = X.columns.tolist()
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=test_size, random_state=random_state)
     model = RandomForestRegressor(n_estimators=100, random_state=random_state)
-    # Train the RandomForestRegressor model on the training data
     model.fit(X_train, y_train)
-    # Use the trained model to predict the target variable on the test data
     y_pred = model.predict(X_test)
-    # Calculate the Mean Squared Error between the actual and predicted values
-    mse = mean_squared_error(y_test, y_pred)
-    # Compute the Root Mean Squared Error by taking the square root of the MSE
-    rmse = np.sqrt(mse)
-    # Calculate the Mean Absolute Error between the actual and predicted values
-    mae = mean_absolute_error(y_test, y_pred)
-    # Compute the R² score to determine the proportion of variance explained by the model
-    r2 = r2_score(y_test, y_pred)
-    # Return the trained model along with all computed regression metrics
-    return model, mse, rmse, mae, r2
+    return model, df, mean_squared_error(y_test, y_pred), np.sqrt(mean_squared_error(y_test, y_pred)), mean_absolute_error(y_test, y_pred), r2_score(y_test, y_pred), feature_columns
 
-# Define the main function that processes multiple tickers
+def simulate_future_ohlcv(last_row):
+    close = last_row['Close']
+    open_price = close + np.random.normal(0, 0.2)
+    high = max(open_price, close) + abs(np.random.normal(0.3, 0.1))
+    low = min(open_price, close) - abs(np.random.normal(0.3, 0.1))
+    volume = last_row['Volume'] * np.random.uniform(0.95, 1.05)
+    return open_price, high, low, volume
+
+def predict_iteratively(ticker, model, df, start_date, end_date, recalc_indicators_fn, feature_columns):
+    if 'date' not in df.columns:
+        print(f"[{ticker}] No date column found; can't do iterative predictions.")
+        return
+    df['date'] = pd.to_datetime(df['date'])
+    df.sort_values('date', inplace=True)
+    last_known_date = df['date'].max()
+    start_dt = adjust_date(start_date)
+    end_dt = adjust_date(end_date)
+    if start_dt is None or end_dt is None or last_known_date >= end_dt:
+        print(f"[{ticker}] No future days to predict between {start_date} and {end_date}.")
+        return
+    future_days = pd.date_range(start=max(start_dt, last_known_date + pd.Timedelta(days=1)), end=end_dt, freq='B')
+    rolling_window = df.tail(20).copy()
+    if 'target' in rolling_window.columns:
+        rolling_window.drop(columns=['target'], inplace=True)
+    predictions = []
+    for day in future_days:
+        last_row = rolling_window.iloc[-1].copy()
+        open_price, high, low, volume = simulate_future_ohlcv(last_row)
+        new_row = last_row.copy()
+        new_row['date'] = day
+        new_row['Open'] = open_price
+        new_row['High'] = high
+        new_row['Low'] = low
+        new_row['Volume'] = volume
+        new_row['Close'] = last_row['Close']
+        rolling_window = pd.concat([rolling_window, new_row.to_frame().T], ignore_index=True)
+        rolling_window = recalc_indicators_fn(rolling_window)
+        latest_row = rolling_window.iloc[-1]
+        X_input = pd.DataFrame([latest_row[feature_columns].values], columns=feature_columns)
+        predicted_close = model.predict(X_input)[0]
+        rolling_window.at[rolling_window.index[-1], 'Close'] = predicted_close
+        predictions.append(rolling_window.iloc[-1].copy())
+    output_df = pd.DataFrame(predictions)
+    os.makedirs('predictions', exist_ok=True)
+    output_csv = f'predictions/{ticker}_iterative_predictions.csv'
+    output_df.to_csv(output_csv, index=False)
+    print(f"[{ticker}] Iterative predictions saved to {output_csv}")
+
 def main():
-    # Open the 'tickers.txt' file and read in each ticker symbol, stripping whitespace
+    future_start_date = '2025-02-29'
+    future_end_date = '2025-03-27'
+    from feature_engineering import recalc_indicators
     with open('tickers.txt', 'r') as f:
         tickers = [line.strip() for line in f if line.strip()]
-    # Create an empty dictionary to store the model and metrics for each ticker
-    results = {}
-    # Iterate over each ticker in the list
     for ticker in tickers:
-        # Print a message indicating the start of training for the current ticker
         print(f"Training model for {ticker}...")
-        # Train the model for the current ticker and retrieve regression metrics
-        model, mse, rmse, mae, r2 = train_model_for_ticker(ticker)
-        # Store the resulting model and metrics in the results dictionary, keyed by the ticker symbol
-        results[ticker] = {
-            'model': model,
-            'mse': mse,
-            'rmse': rmse,
-            'mae': mae,
-            'r2': r2
-        }
-        # Print the evaluation results for the current ticker in a formatted manner
-        print(f"--- {ticker} Results ---")
-        print(f"MSE:  {mse:.4f}")
-        print(f"RMSE: {rmse:.4f}")
-        print(f"MAE:  {mae:.4f}")
-        print(f"R^2:  {r2:.4f}")
-        print("--------------------------------------------------\n")
-# TODO: Further analysis with the 'results' dictionary 
-# Standard boilerplate to execute main() when the script is run directly
+        model, df, mse, rmse, mae, r2, feature_columns = train_model_for_ticker(ticker)
+        print(f"--- {ticker} Results ---\nMSE: {mse:.4f}\nRMSE: {rmse:.4f}\nMAE: {mae:.4f}\nR^2: {r2:.4f}\n")
+        predict_iteratively(ticker, model, df, future_start_date, future_end_date, recalc_indicators, feature_columns)
+
 if __name__ == '__main__':
     main()
