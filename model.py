@@ -1,6 +1,7 @@
 import pandas as pd
 import numpy as np
 import os
+import shutil
 import calendar
 from sklearn.model_selection import train_test_split
 from sklearn.ensemble import RandomForestRegressor
@@ -61,19 +62,17 @@ def simulate_future_ohlcv(last_row):
     volume = last_row['Volume'] * np.random.uniform(0.95, 1.05)
     return open_price, high, low, volume
 
-def predict_iteratively(ticker, model, df, start_date, end_date, recalc_indicators_fn, feature_columns):
+def predict_iteratively(ticker, model, df, trading_days, recalc_indicators_fn, feature_columns):
     if 'date' not in df.columns:
         print(f"[{ticker}] No date column found; can't do iterative predictions.")
         return
     df['date'] = pd.to_datetime(df['date'])
     df.sort_values('date', inplace=True)
     last_known_date = df['date'].max()
-    start_dt = adjust_date(start_date)
-    end_dt = adjust_date(end_date)
-    if start_dt is None or end_dt is None or last_known_date >= end_dt:
-        print(f"[{ticker}] No future days to predict between {start_date} and {end_date}.")
+    future_days = [d for d in trading_days if d > last_known_date]
+    if not future_days:
+        print(f"[{ticker}] No valid future trading days to predict.")
         return
-    future_days = pd.date_range(start=max(start_dt, last_known_date + pd.Timedelta(days=1)), end=end_dt, freq='B')
     rolling_window = df.tail(20).copy()
     if 'target' in rolling_window.columns:
         rolling_window.drop(columns=['target'], inplace=True)
@@ -102,16 +101,28 @@ def predict_iteratively(ticker, model, df, start_date, end_date, recalc_indicato
     print(f"[{ticker}] Iterative predictions saved to {output_csv}")
 
 def main():
-    future_start_date = '2025-02-29'
-    future_end_date = '2025-03-27'
     from feature_engineering import recalc_indicators
+    future_start_date = input("Enter start date (YYYY-MM-DD): ").strip()
+    future_end_date = input("Enter end date (YYYY-MM-DD): ").strip()
+    trading_days = get_trading_days(future_start_date, future_end_date)
+    if trading_days.empty:
+        print("No valid trading days found in the given range.")
+        return
+
+    # Empty the predictions folder
+    if os.path.exists('predictions'):
+        for file in os.listdir('predictions'):
+            file_path = os.path.join('predictions', file)
+            if os.path.isfile(file_path):
+                os.remove(file_path)
+
     with open('tickers.txt', 'r') as f:
         tickers = [line.strip() for line in f if line.strip()]
     for ticker in tickers:
         print(f"Training model for {ticker}...")
         model, df, mse, rmse, mae, r2, feature_columns = train_model_for_ticker(ticker)
         print(f"--- {ticker} Results ---\nMSE: {mse:.4f}\nRMSE: {rmse:.4f}\nMAE: {mae:.4f}\nR^2: {r2:.4f}\n")
-        predict_iteratively(ticker, model, df, future_start_date, future_end_date, recalc_indicators, feature_columns)
+        predict_iteratively(ticker, model, df, trading_days, recalc_indicators, feature_columns)
 
 if __name__ == '__main__':
     main()

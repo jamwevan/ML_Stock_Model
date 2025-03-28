@@ -1,0 +1,2 @@
+Enhance model. I don't think technical indicators are the best. Predictions should revolve around volatility a lot. Ask GPT what other features would be better to train our model on,
+So that we can make it more accurate. 

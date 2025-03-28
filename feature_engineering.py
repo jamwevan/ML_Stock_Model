@@ -92,6 +92,14 @@ def process_stock_data(ticker):
 
 # ===== MAIN DRIVER =====
 def main():
+    # EMPTY processed_data FOLDER FIRST
+    output_folder = "processed_data"
+    if os.path.exists(output_folder):
+        for file in os.listdir(output_folder):
+            file_path = os.path.join(output_folder, file)
+            if os.path.isfile(file_path):
+                os.remove(file_path)
+
     tickers = read_tickers_from_file("tickers.txt")
     for ticker in tickers:
         print(f"Processing {ticker}...")
