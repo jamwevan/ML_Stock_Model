@@ -1,7 +1,6 @@
 import pandas as pd
 import numpy as np
 import os
-import shutil
 import calendar
 from sklearn.model_selection import train_test_split
 from sklearn.ensemble import RandomForestRegressor
@@ -34,17 +33,14 @@ def get_trading_days(start_date, end_date):
     all_bdays = pd.date_range(start=start_dt, end=end_dt, freq='B')
     return pd.DatetimeIndex([d for d in all_bdays if d not in US_MARKET_HOLIDAYS_2025])
 
-def train_model_for_ticker(ticker, test_size=0.2, random_state=42):
+def train_model_for_ticker(ticker, train_start, train_end, test_size=0.2, random_state=42):
     csv_path = f'processed_data/{ticker}_features.csv'
-    df = pd.read_csv(csv_path)
-    date_col = 'date' if 'date' in df.columns else 'Date' if 'Date' in df.columns else None
-    if date_col:
-        df[date_col] = pd.to_datetime(df[date_col], errors='coerce')
+    df = pd.read_csv(csv_path, parse_dates=['date'])
+    df = df[(df['date'] >= train_start) & (df['date'] <= train_end)]
     df['target'] = df['Close'].shift(-1)
     df.dropna(inplace=True)
     df_for_training = df.copy()
-    if date_col:
-        df_for_training.drop(columns=[date_col], inplace=True)
+    df_for_training.drop(columns=['date'], inplace=True)
     X = df_for_training.select_dtypes(include=[np.number]).drop(columns=['target'])
     y = df_for_training['target']
     feature_columns = X.columns.tolist()
@@ -102,27 +98,46 @@ def predict_iteratively(ticker, model, df, trading_days, recalc_indicators_fn, f
 
 def main():
     from feature_engineering import recalc_indicators
-    future_start_date = input("Enter start date (YYYY-MM-DD): ").strip()
-    future_end_date = input("Enter end date (YYYY-MM-DD): ").strip()
-    trading_days = get_trading_days(future_start_date, future_end_date)
-    if trading_days.empty:
-        print("No valid trading days found in the given range.")
-        return
 
-    # Empty the predictions folder
+    num_days = int(input("How many future trading days would you like to predict? ").strip())
+
     if os.path.exists('predictions'):
         for file in os.listdir('predictions'):
             file_path = os.path.join('predictions', file)
             if os.path.isfile(file_path):
                 os.remove(file_path)
 
+    # Load per-ticker training ranges from ticker_date_ranges.txt
+    train_ranges = {}
+    with open('ticker_date_ranges.txt') as f:
+        for line in f:
+            parts = line.strip().split(',')
+            if len(parts) == 3:
+                ticker, start, end = parts
+                train_ranges[ticker] = (adjust_date(start), adjust_date(end))
+
     with open('tickers.txt', 'r') as f:
         tickers = [line.strip() for line in f if line.strip()]
+
     for ticker in tickers:
+        if ticker not in train_ranges:
+            print(f"No date range info for {ticker}. Skipping.")
+            continue
+
+        train_start_date, train_end_date = train_ranges[ticker]
+        trading_days = get_trading_days(train_start_date, '2025-12-31')
+        future_trading_days = trading_days[trading_days > train_end_date][:num_days]
+
+        if future_trading_days.empty:
+            print(f"[{ticker}] No valid future trading days found after training end date.")
+            continue
+
         print(f"Training model for {ticker}...")
-        model, df, mse, rmse, mae, r2, feature_columns = train_model_for_ticker(ticker)
+        model, df, mse, rmse, mae, r2, feature_columns = train_model_for_ticker(
+            ticker, train_start_date, train_end_date
+        )
         print(f"--- {ticker} Results ---\nMSE: {mse:.4f}\nRMSE: {rmse:.4f}\nMAE: {mae:.4f}\nR^2: {r2:.4f}\n")
-        predict_iteratively(ticker, model, df, trading_days, recalc_indicators, feature_columns)
+        predict_iteratively(ticker, model, df, future_trading_days, recalc_indicators, feature_columns)
 
 if __name__ == '__main__':
     main()
