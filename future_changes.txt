@@ -1,7 +1,4 @@
-Make sure graphs still works if predictions go further than stock_data.
-
 Develop the backtesting framework.
 
-Would an RNN be better? (Next semester).
-
+Would an RNN be better? (Next semester). Make two folders. Random Forest && LSTM
 
