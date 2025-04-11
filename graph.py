@@ -2,7 +2,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import os
 
-def plot_comparison(ticker):
+def plot_ticker(ticker):
     pred_path = os.path.join("predictions", f"{ticker}_iterative_predictions.csv")
     actual_path = os.path.join("stock_data", f"{ticker}.csv")
 
@@ -23,26 +23,28 @@ def plot_comparison(ticker):
     pred_df["date"] = pd.to_datetime(pred_df["date"], errors="coerce")
     actual_df["date"] = pd.to_datetime(actual_df["date"], errors="coerce")
 
-    pred_df = pred_df.dropna(subset=["date"]).sort_values("date").tail(20)
+    pred_df = pred_df.dropna(subset=["date"]).sort_values("date").tail(100)
     actual_df = actual_df.dropna(subset=["date"]).sort_values("date")
 
-    # Merge and align
+    pred_df = pred_df.rename(columns={"Close": "Close_predicted"})
+    actual_df = actual_df.rename(columns={"Close": "Close_actual"})
+
     merged = pd.merge(
-        pred_df[["date", "Close"]],
-        actual_df[["date", "Close"]],
-        on="date",
-        how="left",
-        suffixes=("_predicted", "_actual")
+        pred_df[["date", "Close_predicted"]],
+        actual_df[["date", "Close_actual"]],
+        on="date", how="left"
     )
 
-    if merged["Close_actual"].isnull().all():
-        print(f"No matching actual data found for {ticker}'s prediction dates.")
-        return
+    print(f"Plotting {ticker} — {len(merged)} prediction points.")
 
-    # Plot
     plt.figure(figsize=(10, 5))
     plt.plot(merged["date"], merged["Close_predicted"], label="Predicted Close", marker="o")
-    plt.plot(merged["date"], merged["Close_actual"], label="Actual Close", marker="x", linestyle="--")
+
+    if merged["Close_actual"].notnull().any():
+        plt.plot(merged["date"], merged["Close_actual"], label="Actual Close", marker="x", linestyle="--")
+    else:
+        print(f"No actual close prices matched for {ticker}, but still plotting predictions.")
+
     plt.title(f"{ticker} — Actual vs. Predicted Closing Prices")
     plt.xlabel("Date")
     plt.ylabel("Close Price")
@@ -53,15 +55,12 @@ def plot_comparison(ticker):
     plt.show()
 
 def main():
-    prediction_dir = "predictions"
-    files = os.listdir(prediction_dir)
+    with open("tickers.txt", "r") as f:
+        tickers = [line.strip() for line in f if line.strip()]
 
-    # Loop through all prediction files
-    for file in files:
-        if file.endswith("_iterative_predictions.csv"):
-            ticker = file.split("_")[0]
-            print(f"Plotting {ticker}...")
-            plot_comparison(ticker)
+    for ticker in tickers:
+        print(f"--- {ticker} ---")
+        plot_ticker(ticker)
 
 if __name__ == "__main__":
     main()
